@@ -33,7 +33,7 @@ const uint8_t ECONOMY_DUTY_CYCLE = 30; // 30%
 const uint16_t FULL_CURRENT_TIME = 500; // 500 ms latch-on time
 
 // CAN settings
-#define CAN_ID_INPUT 0x397    // VCU HV enable request (CUSTOM-VEHICLE-CAN)
+#define CAN_ID_INPUT 0x108    // VCU HV enable request (CUSTOM-VEHICLE-CAN) (typically from PCS controller)
 #define CAN_ID_OUTPUT 0x398   // Status output (CUSTOM-VEHICLE-CAN)
 #define CAN_ID_GFM 0x293      // GFM v2 CANOpen ID (CUSTOM-VEHICLE-CAN)
 #define CAN_ID_BMS 0x132      // BMS voltage/current (ID132HVBattAmpVolt, TESLA-PRTY-CAN)
@@ -171,7 +171,7 @@ void processBmsAndMotorMessages() {
     }
   }
 
-  // GFM message from Can2 (already on CUSTOM-VEHICLE-CAN, no need to relay)
+  // GFM message from Can2
   if (Can2.read(rxMsg)) {
     if (rxMsg.id == CAN_ID_GFM) {
       gfmIsolation = (rxMsg.buf[2] << 8) | rxMsg.buf[3]; // Bits 16-31, ohms/volt
@@ -201,7 +201,8 @@ void processCanBusMode() {
 
   // Check for CAN input from VCU on Can2
   if (Can2.read(rxMsg) && rxMsg.id == CAN_ID_INPUT) {
-    hvRequested = (rxMsg.buf[0] == 1 || rxMsg.buf[1] == 1);
+    // 0xAA == HV request ON, 0xCC == HV request OFF
+    hvRequested = (rxMsg.buf[0] == 0xAA);
   }
 
   // State machine for CAN bus mode
