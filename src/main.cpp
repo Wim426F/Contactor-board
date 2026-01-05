@@ -4,18 +4,19 @@
 // CAN settings
 #define CAN_ID_HVREQ          0x397 // VCU HV request (POWERTRAIN-CAN)
 #define CAN_ID_STATUS         0x398 // Status output (POWERTRAIN-CAN)
-#define CAN_ID_GFM            0x293 // GFM v2 CANOpen ID (POWERTRAIN-CAN)
-#define CAN_ID_BMS            0x293 // BMS voltage/current (ID132HVBattAmpVolt, TESLA-PRTY-CAN)
 #define CAN_ID_MOTOR          0x126 // Motor HV voltage (ID126RearHVStatus, TESLA-VEHICLE-CAN)
 #define CAN_ID_MAX_POWER      0x696 // T2C power limit (TESLA-VEHICLE-CAN)
 #define CAN_ID_SHIFT          0x697 // T2C shift command (TESLA-VEHICLE-CAN)
 #define CAN_ID_INVERTER_TEMP  0x315 // ID315RearInverterTemps
+#define CAN_ID_DRIVE_STAT     0x118 // ID118DriveSystemStatus
+#define CAN_ID_REAR_POWER     0x266 // ID266RearInverterPower
+#define CAN_ID_SYSTEM_POWER   0x268 // ID268SystemPower
 #define CAN_ID_MOTOR_TORQUE   0x108 // ID264DIR_torque
-#define CAN_ID_MOTOR_TORQUE_NEW 0x801 // ID264DIR_torque renamed
+#define CAN_ID_MOTOR_TORQUE_NEW 0x107 // ID264DIR_torque renamed
 
-FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can1;  // TESLA-VEHICLE-CAN:  T2C and drive unit
-FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Can2;  // POWERTRAIN-CAN:     GFM, VCU, (BMS as well) etc.
-FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> Can3;  // TESLA-PRTY-CAN:     T2C, BMS(MCU), drive unit stats
+FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> Can2;  // POWERTRAIN-CAN:     GFM, VCU, BMS etc.  CAN2 in hardware
+FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> Can3;  // TESLA-PRTY-CAN:     T2C, drive unit     CAN3 in hardware
+FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> Can4;  // TESLA-VEHICLE-CAN:  T2C, drive unit     CAN4 in hardware (why tf did i do this:/
 CAN_message_t rxMsg, txMsg;
 
 // Inputs
@@ -38,7 +39,7 @@ ContactorState ccsnState = OFF, ccspState = OFF, mconpState = OFF, mconnState = 
 
 // PWM setting
 const uint16_t PWM_FREQ = 20000;                // 20 kHz
-const uint8_t ECONOMY_DUTY_CYCLE = 30;          // 30%
+const uint8_t ECONOMY_DUTY_CYCLE = 40;          // 40%
 const uint16_t FULL_CURRENT_TIME = 500;         // 500 ms latch-on time
 
 // Timing variables
@@ -87,24 +88,26 @@ void setup() {
   analogWriteFrequency(CCSN_GATE, PWM_FREQ);
   analogWriteResolution(8); // 8-bit resolution for 0-255 range
 
-  // Initialize CAN buses
-  Can1.begin();
-  Can1.setBaudRate(500000); // TESLA-VEHICLE-CAN (T2C/drive unit)
-  Can1.setMBFilter(MB0, CAN_ID_MAX_POWER); // Filter for power limit
-  Can1.setMBFilter(MB1, CAN_ID_SHIFT);     // Filter for shift command
-  Can1.setMBFilter(MB2, CAN_ID_MOTOR);     // Filter for motor messages
-  Can1.setMBFilter(MB3, CAN_ID_MOTOR_TORQUE);     // Filter for motor messages
-  Can1.setMBFilter(MB4, CAN_ID_INVERTER_TEMP);     // Filter for motor messages
-
+  // POWERTRAIN-CAN (GFM, VCU, etc.)
   Can2.begin();
-  Can2.setBaudRate(500000); // POWERTRAIN-CAN (GFM, VCU, etc.)
-  Can2.setMBFilter(MB0, CAN_ID_GFM);       // Filter for GFM messages
-  Can2.setMBFilter(MB1, CAN_ID_HVREQ);     // Filter for HVCU control messages
-  Can2.setMBFilter(MB2, CAN_ID_MAX_POWER); // Filter for T2C power limit to gateway
-  Can2.setMBFilter(MB3, CAN_ID_SHIFT);     // Filter for T2C shift to gateway
+  Can2.setBaudRate(500000); 
+  Can2.setMBFilter(MB0, CAN_ID_HVREQ);     // Filter for HVCU control messages
+  Can2.setMBFilter(MB1, CAN_ID_MAX_POWER); // Filter for T2C power limit to gateway
+  Can2.setMBFilter(MB2, CAN_ID_SHIFT);     // Filter for T2C shift to gateway
 
+  // TESLA-PRTY-CAN (BMS)
   Can3.begin();
-  Can3.setBaudRate(500000); // TESLA-PRTY-CAN (BMS)
+  Can3.setBaudRate(500000); 
+
+  // TESLA-VEHICLE-CAN (T2C/drive unit)
+  Can4.begin();
+  Can4.setBaudRate(500000); 
+  Can4.setMBFilter(MB0, CAN_ID_MOTOR);     // Filter for motor messages
+  Can4.setMBFilter(MB1, CAN_ID_MOTOR_TORQUE);     // Filter for motor messages
+  Can4.setMBFilter(MB2, CAN_ID_INVERTER_TEMP);     // Filter for motor messages
+  Can4.setMBFilter(MB3, CAN_ID_DRIVE_STAT);     // Filter for motor messages
+  Can4.setMBFilter(MB4, CAN_ID_REAR_POWER);     // Filter for motor messages
+  Can4.setMBFilter(MB5, CAN_ID_SYSTEM_POWER);     // Filter for motor messages
 
   txMsg.id = CAN_ID_STATUS;
   txMsg.len = 7;
@@ -131,21 +134,11 @@ void loop() {
 }
 
 void handleCANMessages() {
-  if (Can1.read(rxMsg)) {
-    // Tunnel messages from T2C on Can1 to VCU on Can2
-    if (rxMsg.id == CAN_ID_INVERTER_TEMP || rxMsg.id == CAN_ID_MOTOR) {
-      Can2.write(rxMsg); // Forward to POWERTRAIN
-    }
-    if (rxMsg.id == CAN_ID_MOTOR_TORQUE) {
-      rxMsg.id = CAN_ID_MOTOR_TORQUE_NEW; // rename msg ID to avoid collision with PCS controller
-      Can2.write(rxMsg); // Forward to POWERTRAIN with the new ID
-    }
-  }
-  
+  // CUSTOM POWERTRAIN-CAN:
   if (Can2.read(rxMsg)) {
-    // Tunnel messages from VCU on Can2 to T2C on Can1
+    // Tunnel messages from VCU on Can2 to T2C on Can4
     if (rxMsg.id == CAN_ID_MAX_POWER || rxMsg.id == CAN_ID_SHIFT) {
-      Can1.write(rxMsg); // Forward to TESLA-VEHICLE-CAN
+      Can4.write(rxMsg); // Forward to TESLA-VEHICLE-CAN
     }
 
     // VCU HVCU control message: [0x39, precharge, negative, positive]
@@ -157,6 +150,19 @@ void handleCANMessages() {
       else if (rxMsg.buf[2] == 0x03) mconnEnable = false;
       if (rxMsg.buf[3] == 0x02) mconpEnable = true;
       else if (rxMsg.buf[3] == 0x03) mconpEnable = false;
+    }
+  }
+
+  // TESLA-VEHICLE-CAN
+  if (Can4.read(rxMsg)) {
+    // Tunnel messages from T2C on Can4 to VCU on Can2
+    if (rxMsg.id == CAN_ID_MOTOR_TORQUE) {
+      rxMsg.id = CAN_ID_MOTOR_TORQUE_NEW; // rename msg ID to avoid collision with PCS controller
+      Can2.write(rxMsg); // Forward to POWERTRAIN with the new ID
+    }
+    else
+    {
+      Can2.write(rxMsg); // Forward to POWERTRAIN
     }
   }
 }
