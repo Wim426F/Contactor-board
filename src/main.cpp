@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <FlexCAN_T4.h>
+#include <Snooze.h>
 
 // CAN settings
 #define CAN_ID_HVREQ          0x397 // VCU HV request (POWERTRAIN-CAN)
@@ -22,10 +23,8 @@ CAN_message_t rxMsg, txMsg;
 // Inputs
 #define CCSN_IN     25
 #define CCSP_IN     24
-#define MCONN_IN    20
-#define MCONP_IN    21
-#define BMS_OK_IN   16
-#define REGEN_IN    17
+#define KEYON_IN    2
+
 // Outputs
 #define MCONP_GATE  19
 #define MCONN_GATE  18
@@ -53,41 +52,17 @@ bool prechargeEnable = false;
 bool mconnEnable = false;
 bool mconpEnable = false;
 
+SnoozeDigital digital; // For pin wake
+SnoozeBlock config(digital); // Install driver
+
 void handleCANMessages();
 void handleCCScontactor(uint8_t inputPin, uint8_t outputPin, ContactorState &state, unsigned long &startTime);
 void handleMainContactor(ContactorState &state, bool enable, uint8_t outputPin, unsigned long &startTime);
 void economizeGate(uint8_t outputPin, ContactorState &state);
 void sendStateViaCAN();
+void enterLowPower();
 
-void setup() {
-  // Initialize pins
-  pinMode(CCSN_IN, INPUT_PULLDOWN);
-  pinMode(CCSP_IN, INPUT_PULLDOWN);
-  pinMode(MCONP_IN, INPUT_PULLDOWN);
-  pinMode(MCONN_IN, INPUT_PULLDOWN);
-  pinMode(BMS_OK_IN, INPUT_PULLDOWN);
-  pinMode(REGEN_IN, INPUT_PULLDOWN);
-
-  pinMode(MCONP_GATE, OUTPUT);
-  pinMode(MCONN_GATE, OUTPUT);
-  pinMode(CCSP_GATE, OUTPUT);
-  pinMode(CCSN_GATE, OUTPUT);
-  pinMode(PRECHARGE, OUTPUT);
-  pinMode(LED_BUILTIN, OUTPUT);
-
-  digitalWrite(MCONP_GATE, LOW);
-  digitalWrite(MCONN_GATE, LOW);
-  digitalWrite(CCSP_GATE, LOW);
-  digitalWrite(CCSN_GATE, LOW);
-  digitalWrite(PRECHARGE, LOW);
-
-  // Set PWM frequency and resolution for contactor pins (excluding PRECHARGE)
-  analogWriteFrequency(MCONP_GATE, PWM_FREQ);
-  analogWriteFrequency(MCONN_GATE, PWM_FREQ);
-  analogWriteFrequency(CCSP_GATE, PWM_FREQ);
-  analogWriteFrequency(CCSN_GATE, PWM_FREQ);
-  analogWriteResolution(8); // 8-bit resolution for 0-255 range
-
+void initCAN() {
   // POWERTRAIN-CAN (GFM, VCU, etc.)
   Can2.begin();
   Can2.setBaudRate(500000); 
@@ -108,10 +83,46 @@ void setup() {
   Can4.setMBFilter(MB3, CAN_ID_DRIVE_STAT);     // Filter for motor messages
   Can4.setMBFilter(MB4, CAN_ID_REAR_POWER);     // Filter for motor messages
   Can4.setMBFilter(MB5, CAN_ID_SYSTEM_POWER);     // Filter for motor messages
+}
+
+void initPWM() {
+  // Set PWM frequency and resolution for contactor pins (excluding PRECHARGE)
+  analogWriteFrequency(MCONP_GATE, PWM_FREQ);
+  analogWriteFrequency(MCONN_GATE, PWM_FREQ);
+  analogWriteFrequency(CCSP_GATE, PWM_FREQ);
+  analogWriteFrequency(CCSN_GATE, PWM_FREQ);
+  analogWriteResolution(8); // 8-bit resolution for 0-255 range
+}
+
+void setup() {
+  // Initialize pins
+  pinMode(CCSN_IN, INPUT_PULLDOWN);
+  pinMode(CCSP_IN, INPUT_PULLDOWN);
+  pinMode(KEYON_IN, INPUT_PULLDOWN);
+
+  pinMode(MCONP_GATE, OUTPUT);
+  pinMode(MCONN_GATE, OUTPUT);
+  pinMode(CCSP_GATE, OUTPUT);
+  pinMode(CCSN_GATE, OUTPUT);
+  pinMode(PRECHARGE, OUTPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
+
+  digitalWrite(MCONP_GATE, LOW);
+  digitalWrite(MCONN_GATE, LOW);
+  digitalWrite(CCSP_GATE, LOW);
+  digitalWrite(CCSN_GATE, LOW);
+  digitalWrite(PRECHARGE, LOW);
+
+  initPWM(); // Init PWM settings
+
+  initCAN(); // Init all CAN buses and filters
 
   txMsg.id = CAN_ID_STATUS;
   txMsg.len = 7;
   txMsg.flags.extended = 0;
+
+  // Snooze config for wake on KEYON_IN rising
+  digital.pinMode(KEYON_IN, INPUT_PULLDOWN, RISING);
 }
 
 void loop() {
@@ -130,6 +141,11 @@ void loop() {
     lastCanSendTime = millis();
     sendStateViaCAN();
     digitalToggle(LED_BUILTIN);
+  }
+
+  // Sleep if KEYON low and contactors OFF
+  if (digitalRead(KEYON_IN) == LOW && mconnState == OFF && mconpState == OFF) {
+    enterLowPower();
   }
 }
 
@@ -213,7 +229,18 @@ void sendStateViaCAN() {
   txMsg.buf[1] = mconnState;
   txMsg.buf[2] = ccspState;
   txMsg.buf[3] = ccsnState;
-  txMsg.buf[4] = digitalRead(REGEN_IN);
-  txMsg.len = 5;
+  txMsg.len = 4;
   Can2.write(txMsg);
+}
+
+void enterLowPower() {
+  // Prep: LED off
+  digitalWrite(LED_BUILTIN, LOW);
+
+  // Deep sleep, wake on KEYON rising
+  Snooze.deepSleep(config);
+
+  // Post-wake: Re-init
+  initPWM();
+  initCAN();
 }
