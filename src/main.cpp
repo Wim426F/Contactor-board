@@ -238,7 +238,7 @@ void enterLowPower() {
   digitalWrite(LED_BUILTIN, LOW);
 
   // Deep sleep, wake on KEYON rising
-  Snooze.deepSleep(config);
+  Snooze.hibernate(config);
 
   // Post-wake: Re-init
   initPWM();
