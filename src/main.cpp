@@ -43,9 +43,12 @@ const uint16_t FULL_CURRENT_TIME = 500;         // 500 ms latch-on time
 
 // Timing variables
 const unsigned long CAN_SEND_INTERVAL = 100;
+const unsigned long SLEEP_COUNTDOWN_TIME = 10000; // 10 seconds before sleep
 unsigned long lastCanSendTime = 0;
 unsigned long ccsnStartTime = 0, ccspStartTime = 0;
 unsigned long mconpStartTime = 0, mconnStartTime = 0;
+unsigned long sleepCountdownStart = 0;
+bool sleepCountdownActive = false;
 
 // HVCU control states from CAN
 bool prechargeEnable = false;
@@ -61,6 +64,8 @@ void handleMainContactor(ContactorState &state, bool enable, uint8_t outputPin, 
 void economizeGate(uint8_t outputPin, ContactorState &state);
 void sendStateViaCAN();
 void enterLowPower();
+bool shouldEnterSleep();
+void cancelSleepCountdown();
 
 void initCAN() {
   // POWERTRAIN-CAN (GFM, VCU, etc.)
@@ -143,10 +148,38 @@ void loop() {
     digitalToggle(LED_BUILTIN);
   }
 
-  // Sleep if KEYON low and contactors OFF
-  if (digitalRead(KEYON_IN) == LOW && mconnState == OFF && mconpState == OFF) {
-    enterLowPower();
+  // Check if we should start or cancel sleep countdown
+  if (shouldEnterSleep()) {
+    if (!sleepCountdownActive) {
+      // Start countdown
+      sleepCountdownActive = true;
+      sleepCountdownStart = millis();
+    } else if (millis() - sleepCountdownStart >= SLEEP_COUNTDOWN_TIME) {
+      // Countdown complete, enter sleep
+      enterLowPower();
+    }
+  } else {
+    // Conditions no longer met for sleep, cancel countdown
+    if (sleepCountdownActive) {
+      cancelSleepCountdown();
+    }
   }
+}
+
+bool shouldEnterSleep() {
+  // All conditions must be met to enter sleep:
+  // - Key is OFF
+  // - All contactors are OFF
+  return (digitalRead(KEYON_IN) == LOW && 
+          mconnState == OFF && 
+          mconpState == OFF &&
+          ccsnState == OFF &&
+          ccspState == OFF);
+}
+
+void cancelSleepCountdown() {
+  sleepCountdownActive = false;
+  sleepCountdownStart = 0;
 }
 
 void handleCANMessages() {
@@ -240,7 +273,8 @@ void enterLowPower() {
   // Deep sleep, wake on KEYON rising
   Snooze.hibernate(config);
 
-  // Post-wake: Re-init
+  // Post-wake: Re-init and cancel any active countdown
   initPWM();
   initCAN();
+  cancelSleepCountdown();
 }
