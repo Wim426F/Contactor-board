@@ -24,6 +24,7 @@ CAN_message_t rxMsg, txMsg;
 #define CCSN_IN     25
 #define CCSP_IN     24
 #define KEYON_IN    2
+#define CHGPORT_TEMP A1
 
 // Outputs
 #define MCONP_GATE  19
@@ -31,6 +32,7 @@ CAN_message_t rxMsg, txMsg;
 #define CCSP_GATE   13
 #define CCSN_GATE   14
 #define PRECHARGE   12
+#define CRUISE_EN   16 // actually regen disable pin now
 
 enum ContactorState { OFF, STARTUP, ECONOMIZED };
 
@@ -57,6 +59,17 @@ bool mconpEnable = false;
 
 SnoozeDigital digital; // For pin wake
 SnoozeBlock config(digital); // Install driver
+
+
+const uint16_t tempSensorTable[71] = {
+  4005,3989,3970,3949,3925,3897,3866,3831,3791,3747,
+  3698,3643,3583,3518,3446,3369,3286,3198,3104,3005,
+  2902,2794,2683,2570,2455,2338,2222,2105,1990,1877,
+  1766,1658,1554,1454,1358,1267,1180,1098,1020,947,
+  879,815,755,700,648,600,556,515,477,441,
+  409,379,351,325,302,280,260,241,224,208,
+  194,180,168,157,146,136,127,119,111,104,97
+};
 
 void handleCANMessages();
 void handleCCScontactor(uint8_t inputPin, uint8_t outputPin, ContactorState &state, unsigned long &startTime);
@@ -110,6 +123,7 @@ void setup() {
   pinMode(CCSP_GATE, OUTPUT);
   pinMode(CCSN_GATE, OUTPUT);
   pinMode(PRECHARGE, OUTPUT);
+  pinMode(CRUISE_EN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
 
   digitalWrite(MCONP_GATE, LOW);
@@ -117,6 +131,7 @@ void setup() {
   digitalWrite(CCSP_GATE, LOW);
   digitalWrite(CCSN_GATE, LOW);
   digitalWrite(PRECHARGE, LOW);
+  digitalWrite(CRUISE_EN, LOW);
 
   initPWM(); // Init PWM settings
 
@@ -166,6 +181,23 @@ void loop() {
   }
 }
 
+int8_t getChargeportTemp() {
+  uint16_t adc = analogRead(A1);
+  uint16_t last = 0;
+
+  for (uint8_t i = 0; i < 71; i++) {
+    uint16_t cur = tempSensorTable[i];
+    if (cur >= adc) {
+      if (i == 0) return 0; // -30°C minimum
+      float frac = (float)(cur - adc) / (cur - last);
+      float temp = (2.0f * i) - 30.0f - (2.0f * frac);
+      return (uint8_t)(temp + 30);
+    }
+    last = cur;
+  }
+  return 140;   // +110°C (end of table)
+}
+
 bool shouldEnterSleep() {
   // All conditions must be met to enter sleep:
   // - Key is OFF
@@ -188,6 +220,20 @@ void handleCANMessages() {
     // Tunnel messages from VCU on Can2 to T2C on Can4
     if (rxMsg.id == CAN_ID_MAX_POWER || rxMsg.id == CAN_ID_SHIFT) {
       Can4.write(rxMsg); // Forward to TESLA-VEHICLE-CAN
+    }
+
+    if (rxMsg.id == CAN_ID_MAX_POWER)
+    {
+      // If allowed regen is 0, force REGEN_DISABLE to T2C.
+      // The pin allows immediate regen disable, while setting CAN value to 0 only causes slow rampdown towards 0 power.
+      if (rxMsg.buf[2] == 0x00 && rxMsg.buf[3] == 0x00)
+      {
+        digitalWrite(CRUISE_EN, HIGH);
+      }
+      else
+      {
+        digitalWrite(CRUISE_EN, LOW);
+      }
     }
 
     // VCU HVCU control message: [0x39, precharge, negative, positive]
@@ -262,7 +308,8 @@ void sendStateViaCAN() {
   txMsg.buf[1] = mconnState;
   txMsg.buf[2] = ccspState;
   txMsg.buf[3] = ccsnState;
-  txMsg.len = 4;
+  txMsg.buf[4] = getChargeportTemp();
+  txMsg.len = 5;
   Can2.write(txMsg);
 }
 
