@@ -158,6 +158,7 @@ static inline void diagCopyToCan2(const CAN_message_t &m) {
     case CAN_ID_INVERTER_TEMP:  // 0x315
     case CAN_ID_DRIVE_STAT:     // 0x118
     case CAN_ID_REAR_POWER:     // 0x266
+    case CAN_ID_MOTOR:          // 0x126
     case CAN_ID_SYSTEM_POWER:   // 0x268
     case CAN_ID_DI_ALERTMATRIX: // 0x35A
       Can2.write(m);
@@ -182,21 +183,21 @@ void initCAN() {
   Can2.setMBFilter(MB3, CAN_ID_TORQUE_CUT);  // 0x201 cut request  [NEW]
 
   // TESLA control bus - T2C SEGMENT (Can3): accept-all, ordered FIFO.
-  // NOTE: verify ACCEPT_ALL FIFO behavior on your FlexCAN_T4 version - if any
-  //       frames go missing, check this first.
+  // Drained by polling Can3.read() in handleCANMessages(). Do NOT enable the
+  // FIFO interrupt: with it set, readFIFO() is polling-blocked and frames only
+  // come out via events()/onReceive(), which we don't use.
   Can3.begin();
   Can3.setBaudRate(500000);
   Can3.setMaxMB(16);
   Can3.enableFIFO();
-  Can3.enableFIFOInterrupt();
   Can3.setFIFOFilter(ACCEPT_ALL);
 
   // TESLA control bus - DRIVE-UNIT SEGMENT (Can4): accept-all, ordered FIFO.
+  // Polled, same as Can3 - no FIFO interrupt (see note above).
   Can4.begin();
   Can4.setBaudRate(500000);
   Can4.setMaxMB(16);
   Can4.enableFIFO();
-  Can4.enableFIFOInterrupt();
   Can4.setFIFOFilter(ACCEPT_ALL);
 }
 
@@ -246,8 +247,8 @@ void loop() {
   handleCANMessages();
 
   // Handle CCS contactors based on hardware inputs
-  handleCCScontactor(CCSN_IN, CCSN_GATE, ccsnState, ccsnStartTime);
-  handleCCScontactor(CCSP_IN, CCSP_GATE, ccspState, ccspStartTime);
+  //handleCCScontactor(CCSN_IN, CCSN_GATE, ccsnState, ccsnStartTime);
+  //handleCCScontactor(CCSP_IN, CCSP_GATE, ccspState, ccspStartTime);
 
   // Handle main contactors and precharge based on latest CAN command
   digitalWrite(PRECHARGE, prechargeEnable ? HIGH : LOW);
