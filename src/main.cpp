@@ -15,7 +15,9 @@
 #define CAN_ID_DRIVE_STAT     0x118 // ID118DriveSystemStatus
 #define CAN_ID_REAR_POWER     0x266 // ID266RearInverterPower
 #define CAN_ID_SYSTEM_POWER   0x268 // ID268SystemPower
-#define CAN_ID_DI_ALERTMATRIX 0x35A // ID35A_DI_alertMatrix3
+#define CAN_ID_DI_ALERTMATRIX 0x3A5 // ID35A_DI_alertMatrix3
+#define CAN_ID_DI_LIMITS      0x1D6 // ID1D6DI_limits
+#define CAN_ID_REAR_TORQUE    0x1D8 // ID1D8RearTorque
 #define CAN_ID_MOTOR_TORQUE     0x108 // ID264DIR_torque
 #define CAN_ID_MOTOR_TORQUE_NEW 0x107 // renamed to avoid PCS collision on Can2
 
@@ -31,11 +33,10 @@
 #define COUNTER_CYCLE       0x0F   // rolling counter mask (low nibble)
 #define TORQUE_CUT_TIMEOUT_MS 150  // 0x201 is sent every 50 ms; tolerate ~2 misses
 
-// Experimental: drive the rear DU toward idle via 0x334 mode bits on all-torque
-// cut (motorOnMode=FRONT_ONLY, stoppingMode=STANDARD). OFF by default, this
-// touches mode bits and is UNVALIDATED on a front-less car (may fault). Only
-// enable to bench-test "electronic neutral".
-#define ENABLE_EXPERIMENTAL_MOTOR_IDLE 1
+// Confirmed on-car: motorOnMode=FRONT_ONLY in 0x334 is IGNORED by the rear DU,
+// and 0x334 regenTorqueMax has no effect either (0x334 is advisory). The
+// effective power lever is 0x268 (below). Kept at 0; flip only to re-test.
+#define ENABLE_EXPERIMENTAL_MOTOR_IDLE 0
 
 // =====================  Bus wiring  =====================
 //   Can2 (HW CAN2): CUSTOM POWERTRAIN-CAN - VCU, GFM, BMS, PCS, dashboard
@@ -149,6 +150,24 @@ static inline bool regenClampActive() {
   return cut201Fresh() && (g_regen_cut || g_all_cut);
 }
 
+// 0x268 ID268SystemPower (5 bytes, NO checksum/counter). Encoding confirmed
+// against a real log (01 01 1B 00 73 -> drive 27 kW, regen 15 kW):
+//   SystemDrivePowerMax268 : bits 16-24 (byte2 + bit0 of byte3), kW, raw = kW
+//   SystemRegenPowerMax268 : byte4, kW = raw - 100  (so 0 kW -> raw 100)
+// This is the EFFECTIVE power lever to the drive unit, applied by the T2C after
+// its (buggy) rampdown. We overwrite ABSOLUTE values, so we cannot underflow/
+// overflow the way the T2C does. Only ever reduces -> bounded-safe.
+static inline void modify268(uint8_t *d) {
+  const bool fresh = cut201Fresh();
+  if (fresh && (g_regen_cut || g_all_cut)) {
+    d[4] = 100;            // SystemRegenPowerMax -> 0 kW
+  }
+  if (fresh && g_all_cut) {
+    d[2] = 0x00;          // SystemDrivePowerMax low 8 bits -> 0
+    d[3] = (uint8_t)(d[3] & ~0x01);  // SystemDrivePowerMax bit8 -> 0 (preserve other bits)
+  }
+}
+
 // Copy the diagnostic subset of drive-unit traffic to the VCU bus (Can2),
 // renaming 0x108 -> 0x107. Uses a local copy so the relayed frame is never
 // mutated. Called for frames seen on BOTH Tesla segments so it is robust to
@@ -159,8 +178,8 @@ static inline void diagCopyToCan2(const CAN_message_t &m) {
     case CAN_ID_DRIVE_STAT:     // 0x118
     case CAN_ID_REAR_POWER:     // 0x266
     case CAN_ID_MOTOR:          // 0x126
-    case CAN_ID_SYSTEM_POWER:   // 0x268
     case CAN_ID_DI_ALERTMATRIX: // 0x35A
+    case CAN_ID_DI_LIMITS:      // 0x1D6
       Can2.write(m);
       break;
     case CAN_ID_MOTOR_TORQUE: { // 0x108 -> 0x107
@@ -271,7 +290,7 @@ void loop() {
       // Countdown complete, enter sleep
       enterLowPower();
     }
-  } else {
+  } else { 
     // Conditions no longer met for sleep, cancel countdown
     if (sleepCountdownActive) {
       cancelSleepCountdown();
@@ -363,6 +382,11 @@ void handleCANMessages() {
 #endif
       if (edited) teslaFixChecksum(rxMsg.buf, CAN_ID_POWERTRAIN_CTRL);
       Can2.write(rxMsg); // Copy 0x334 to VCU bus.
+    }
+    else if (rxMsg.id == CAN_ID_SYSTEM_POWER && rxMsg.len == 5) {
+      // 0x268 is the EFFECTIVE power lever (post-rampdown). No checksum to fix.
+      modify268(rxMsg.buf);
+      Can2.write(rxMsg); // Copy to VCU
     }
     Can4.write(rxMsg);        // forward (modified iff a cut is active)
     
