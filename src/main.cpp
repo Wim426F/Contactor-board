@@ -456,11 +456,17 @@ void enterLowPower() {
   // Prep: LED off
   digitalWrite(LED_BUILTIN, LOW);
 
-  // Deep sleep, wake on KEYON rising
-  Snooze.hibernate(config);
+  // Mask + clear the FlexCAN interrupts so KEYON is the only wake source.
+  // hibernate() sleeps at a single WFI; a CAN interrupt pending at that instant
+  // makes the WFI a no-op and the core hangs instead of powering down.
+  NVIC_DISABLE_IRQ(IRQ_CAN1);   // Can4 peripheral
+  NVIC_DISABLE_IRQ(IRQ_CAN2);   // Can2 peripheral
+  NVIC_DISABLE_IRQ(IRQ_CAN3);   // Can3 peripheral
+  NVIC_CLEAR_PENDING(IRQ_CAN1);
+  NVIC_CLEAR_PENDING(IRQ_CAN2);
+  NVIC_CLEAR_PENDING(IRQ_CAN3);
 
-  // Post-wake: Re-init and cancel any active countdown
-  initPWM();
-  initCAN();
-  cancelSleepCountdown();
+  // Deep sleep, wake on KEYON rising. The chip resets on wake and re-runs
+  // setup(), so execution does not continue past this call.
+  Snooze.hibernate(config);
 }
