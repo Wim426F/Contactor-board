@@ -241,7 +241,6 @@ void setup() {
   pinMode(CCSN_GATE, OUTPUT);
   pinMode(PRECHARGE, OUTPUT);
   pinMode(CRUISE_EN, OUTPUT);
-  pinMode(LED_BUILTIN, OUTPUT);
 
   digitalWrite(MCONP_GATE, LOW);
   digitalWrite(MCONN_GATE, LOW);
@@ -266,8 +265,8 @@ void loop() {
   handleCANMessages();
 
   // Handle CCS contactors based on hardware inputs
-  //handleCCScontactor(CCSN_IN, CCSN_GATE, ccsnState, ccsnStartTime);
-  //handleCCScontactor(CCSP_IN, CCSP_GATE, ccspState, ccspStartTime);
+  handleCCScontactor(CCSN_IN, CCSN_GATE, ccsnState, ccsnStartTime);
+  handleCCScontactor(CCSP_IN, CCSP_GATE, ccspState, ccspStartTime);
 
   // Handle main contactors and precharge based on latest CAN command
   digitalWrite(PRECHARGE, prechargeEnable ? HIGH : LOW);
@@ -277,7 +276,6 @@ void loop() {
   if (millis() - lastCanSendTime >= CAN_SEND_INTERVAL) {
     lastCanSendTime = millis();
     sendStateViaCAN();
-    digitalToggle(LED_BUILTIN);
   }
 
   // Check if we should start or cancel sleep countdown
@@ -453,9 +451,6 @@ void sendStateViaCAN() {
 }
 
 void enterLowPower() {
-  // Prep: LED off
-  digitalWrite(LED_BUILTIN, LOW);
-
   // Mask + clear the FlexCAN interrupts so KEYON is the only wake source.
   // hibernate() sleeps at a single WFI; a CAN interrupt pending at that instant
   // makes the WFI a no-op and the core hangs instead of powering down.
